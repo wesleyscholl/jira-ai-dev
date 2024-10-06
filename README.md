@@ -10,6 +10,7 @@ Automating software development with AI
 - Update Jira ticket status from "Open" to "In Development".
 - Send the ticket number and title to the Gemini 1.5 Flash API to create the GitHub branch name, shorten it to 40 characters total including the ticket number (Example - "CRS-5437-Project-New-Feature-Description").
 - Checkout new branch using the shortened branch title and push the new branch to origin (remote).
+- Create .ignore file to exclude files and directories from repo context: `yarn.lock`, `package-json.lock`, `/node_modules`, `.prettierrc.json` and other large unnecessary files and directories.
 - Send ticket details and repo context to Gemini 1.5 Flash API with specific instructions.
 - Specific instructions, to return file names to modify, full code for files to modify (with new code) to complete the Jira ticket. 
 - The response structure and format needs to be predictable to parse and make file changes to the git repo.
