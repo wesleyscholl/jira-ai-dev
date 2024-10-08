@@ -1,11 +1,9 @@
 # gemini_utils.py
-import requests
 import json
 import subprocess
-import base64
-import gzip
 from dotenv import load_dotenv
 import os
+import tempfile
 import google.generativeai as genai
 
 load_dotenv()  # Load environment variables from .env
@@ -37,7 +35,7 @@ def get_repo_context():
 
 def get_gemini_changes(ticket_name, description, acceptance_requirements, repo_context):
     """Sends a prompt to Gemini API for code generation based on ticket details and repo content."""
-    gemini_prompt = f"Using the ticket name, description, acceptance requirements, and repo data send git changes (with file names) to complete the Jira ticket in a structured json format. For each file, provide the file path (filepath) and a diff that represents the changes for the entire file. Do not use backticks like a code block. Ensuring all properties and values are quoted, respond with valid json in this format: {{changes: [{{filepath: file1.py, diff: git diff}}, {{filepath: file2.txt, diff: git diff}}]}}. -- Ticket name: '{ticket_name}' -- Ticket Description: '{description}' -- Acceptance Requirements: '{acceptance_requirements}' -- Repo Context: '{repo_context}' -- Do not include any other text in the repsonse."
+    gemini_prompt = f"Using the ticket name, description, acceptance requirements, and repo data send git changes (with file names) to complete the Jira ticket in a structured json format. For each file, provide the file path (filepath), a diff that represents the changes, and the updated_content for the entire file. Do not use backticks like a code block. Ensuring all properties and values are quoted, respond with valid json in this format: {{changes: [{{filepath: file1.py, diff: git diff, updated_content: updates}}, {{filepath: file2.txt, diff: git diff, updated_content: updates}}]}}. -- Ticket name: '{ticket_name}' -- Ticket Description: '{description}' -- Acceptance Requirements: '{acceptance_requirements}' -- Repo Context: '{repo_context}' -- Do not include any other text in the repsonse."
     model = genai.GenerativeModel("gemini-1.5-pro-exp-0827")
     response = model.generate_content(gemini_prompt)
     return response.text
@@ -67,36 +65,39 @@ def apply_gemini_changes(gemini_response):
         print(change)
         filepath = change["filepath"]
         diff = change["diff"].replace("\\r\\n", "\n")  # Replace Windows-style line endings
-        updated_content = change["updated_content"].replace("\\r\\n", "\n")  # Replace Windows-style line endings
+        updated_content = change["updated_content"].replace("\\r\\n", "\n")  # Replace Windows-style line endings   
 
         print(f"Processing file: {filepath}")
         print(f"Diff:\n{diff}\n")  # Print the diff for debugging
 
-        # Check if the file exists
+        # Ensure the file exists
         if not os.path.exists(filepath):
-            print(f"File does not exist: {filepath}. Creating it.")
+            print(f"File does not exist: {filepath}. Creating it with updated content.")
             with open(filepath, "w") as f:
-                pass  # Create an empty file
+                f.write(updated_content)
+            subprocess.run(['git', 'add', filepath])
+            print(f"File {filepath} created and added to git.")
+            continue
 
-        # Apply the diff
+        # Create a temporary file with the patch
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
+            temp_file.write(f"--- a/{filepath}\n")
+            temp_file.write(f"+++ b/{filepath}\n")
+            temp_file.write(diff)
+            temp_file_name = temp_file.name
+
         try:
-            # Try using git apply instead of patch
-            subprocess.run(['git', 'apply', '--index', '--whitespace=fix', '-'], input=diff.encode(), check=True)
+            # Try to apply the patch
+            subprocess.run(['git', 'apply', '--whitespace=fix', temp_file_name], check=True)
             print("Patch applied successfully.")
         except subprocess.CalledProcessError as e:
             print(f"Error applying patch to {filepath}: {e}")
-            print("Trying to apply patch using patch command...")
-            try:
-                subprocess.run(["patch", "-p1", "--forward", "-i", "-"], input=diff.encode(), check=True)
-                print("Patch applied successfully.")
-            except subprocess.CalledProcessError as e:
-                print(f"Error applying patch to {filepath}: {e}")
-                print("Skipping file due to patch error.")
-                continue
+            print("Falling back to direct file update...")
+            with open(filepath, "w") as f:
+                f.write(updated_content)
+            print(f"Updated content written directly to {filepath}")
 
-        # Write the updated content to the file
-        with open(filepath, "w") as f:
-            f.write(updated_content)
-        print(f"Updated content written to {filepath}")
+        # Clean up the temporary file
+        os.unlink(temp_file_name)
+        print(f"Temporary file {temp_file_name} deleted.")
         print("------------------------")
-            
