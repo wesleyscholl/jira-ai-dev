@@ -1,97 +1,73 @@
+import os
+import subprocess
 import requests
 import json
-import os
-from git import Repo
-import jira_utils
-import github_utils
-import gemini_utils
+import base64
+import gzip
+from jira_utils import *
+from github_utils import *
+from gemini_utils import *
 from dotenv import load_dotenv
 
 load_dotenv()  # Load environment variables from .env
 
-JIRA_USERNAME = os.getenv("JIRA_USERNAME")
-JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
-JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
-JIRA_API_VERSION = os.getenv("JIRA_API_VERSION")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 def main():
-    # 1. Get latest Jira ticket
-    ticket_data = jira_utils.get_latest_ticket()
-    ticket_id = ticket_data['issues'][0]['key']
-    ticket_name = ticket_data['issues'][0]['fields']['summary']
-    repo_url = ticket_data['issues'][0]['fields']['customfield_13410'][0]
+    # Attempt to change to the git root
+    git_root = subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip()
+    if git_root:
+        print(f"Changing to Git root directory: {git_root}")
+        os.chdir(git_root)
+    else:
+        print("Error: Not inside a Git repository.")
+        exit(1)
 
-    # 2. Generate branch name using Gemini
-    shortened_branch_name = gemini_utils.get_gemini_branch_name(ticket_name)
-    branch_name = f"{ticket_id}-{shortened_branch_name}"
+    # Get the most recent ticket info with the jira rest api
+    ticket = get_latest_ticket()
 
-    # 3. Clone repository
-    repo_path = os.path.join(os.getcwd(), "repo")
-    if not os.path.exists(repo_path):
-        github_utils.clone_repo(repo_url, repo_path)
+    # Extract ticket information
+    ticket_number = ticket['issues'][0]['key']
+    ticket_name = ticket['issues'][0]['fields']['summary']
+    description = ticket['issues'][0]['fields']['description']['content'][0]['content'][0]['text']
+    acceptance_requirements = ticket['issues'][0]['fields']['customfield_12700']['content'][0]['content'][0]['text']
 
-    # 4. Checkout new branch and push
-    repo = Repo(repo_path)
-    repo.git.checkout("-b", branch_name)
-    repo.git.push("--set-upstream", "origin", branch_name)
+    print(f"Ticket Number: {ticket_number}")
+    print(f"Ticket Name: {ticket_name}")
+    print(f"Ticket Description: {description}")
+    print(f"Acceptance Requirements: {acceptance_requirements}")
 
-    # 5. Update Jira status
-    jira_utils.update_jira_status(ticket_id, "In Development")
+    # Generate branch name using Gemini
+    ticket_name_short = generate_branch_name(ticket_name)
 
-    # 6. Get repo data
-    repo_data = gemini_utils.get_repo_data(repo_path)
+    # Trim whitespace from the ticket name
+    ticket_name_short = ticket_name_short.strip()
 
-    # 7. Generate code changes from Gemini
-    code_changes = gemini_utils.get_gemini_code_changes(ticket_data, repo_data)
+    branch_name = f"{ticket_number}-{ticket_name_short}"
 
-    # 8. Apply code changes
-    code_changes = code_changes.strip()  # Remove leading/trailing whitespace
+    print(f"Branch Name: {branch_name}")
 
-    if code_changes:
-        # **1. Validation:** Check for valid JSON format
-        try:
-            code_changes_dict = json.loads(code_changes)
-        except json.JSONDecodeError:
-            print("Error: Unable to decode Gemini response. Please check the format.")
-            return  # Exit if JSON is invalid
+    # Create a new branch
+    create_branch(branch_name)
 
-        # **2. Validation:** Check if the response contains any changes
-        if not code_changes_dict:
-            print("Info: Gemini did not provide any code changes.")
-            return  # Exit if no changes are provided
+    # Push the new branch to the remote repository
+    push_branch(branch_name)
 
-        # **3. Apply changes**
-        repo = Repo(repo_path)
-        for file_path, file_content in code_changes_dict.items():
-            # **4. Error Handling: Invalid File Paths**
-            # Adjust file_path to be relative to the repository root if needed
-            file_path = os.path.join(repo_path, file_path)
+    # Update ticket status to "In Progress"
+    # update_jira_status(ticket_number, "In Progress")
 
-            try:
-                # **5. Error Handling: Permission Errors**
-                with open(file_path, "w") as f:
-                    f.write(file_content)
-                repo.git.add(file_path)  # Stage the changes
-            except PermissionError as e:
-                print(f"Error: Permission error while writing to file: {file_path}")
-                print(f"Error message: {e}")
-            except FileNotFoundError as e:
-                print(f"Error: File not found: {file_path}")
-                print(f"Error message: {e}")
+    # Get the repo context and encode it
+    repo_context = get_repo_context()
 
-        # **6. Error Handling: Commit and Push**
-        try:
-            repo.git.commit(m=f"Completed Jira ticket {ticket_id}")
-            repo.git.push()
-        except Exception as e:
-            print(f"Error: Committing and pushing changes failed.")
-            print(f"Error message: {e}")
-            return  # Exit if commit/push fails
+    # Send the prompt to Gemini with the cached content ID
+    gemini_response = get_gemini_changes(ticket_name, description, acceptance_requirements, repo_context)
 
-    # 9. Update Jira status to "Code Review" (TODO)
-    jira_utils.update_jira_status(ticket_id, "Code Review")
-    # ... (After applying code changes) ...
+    # Parse and apply the Gemini response
+    apply_gemini_changes(gemini_response)
+
+    # Commit and push changes
+    # commit_and_push()
+
+    # Update ticket status to "Code Review"
+    update_jira_status(ticket_number, "Code Review")
 
 if __name__ == "__main__":
     main()
