@@ -37,7 +37,7 @@ def get_repo_context():
 
 def get_gemini_changes(ticket_name, description, acceptance_requirements, repo_context):
     """Sends a prompt to Gemini API for code generation based on ticket details and repo content."""
-    gemini_prompt = f"Using the ticket name, description, acceptance requirements, and repo data send git changes (with file names) to complete the Jira ticket in a structured json format. For each file, provide the file path (filepath), a diff that represents the changes, and the updated_content for the entire file. Do not use backticks like a code block. Ensuring all properties and values are quoted, respond with valid json in this format: {{changes: [{{filepath: file1.py, diff: git diff, updated_content: updates}}, {{filepath: file2.txt, diff: git diff, updated_content: updates}}]}}. -- Ticket name: '{ticket_name}' -- Ticket Description: '{description}' -- Acceptance Requirements: '{acceptance_requirements}' -- Repo Context: '{repo_context}' -- Do not include any other text in the repsonse."
+    gemini_prompt = f"Using the ticket name, description, acceptance requirements, and repo data send git changes (with file names) to complete the Jira ticket in a structured json format. For each file, provide the file path (filepath) and a diff that represents the changes for the entire file. Do not use backticks like a code block. Ensuring all properties and values are quoted, respond with valid json in this format: {{changes: [{{filepath: file1.py, diff: git diff}}, {{filepath: file2.txt, diff: git diff}}]}}. -- Ticket name: '{ticket_name}' -- Ticket Description: '{description}' -- Acceptance Requirements: '{acceptance_requirements}' -- Repo Context: '{repo_context}' -- Do not include any other text in the repsonse."
     model = genai.GenerativeModel("gemini-1.5-pro-exp-0827")
     response = model.generate_content(gemini_prompt)
     return response.text
@@ -46,6 +46,8 @@ def apply_gemini_changes(gemini_response):
     """Parses and applies the code changes returned by Gemini."""
     changes_array = gemini_response
     changes_array = changes_array.strip()
+    changes_array = changes_array.replace("```json", "")
+    changes_array = changes_array.replace("```diff", "")
     changes_array = changes_array.replace("```json\n", "")
     changes_array = changes_array.replace("```diff\n", "")
     changes_array = changes_array.replace("```", "")
@@ -68,6 +70,7 @@ def apply_gemini_changes(gemini_response):
         updated_content = change["updated_content"].replace("\\r\\n", "\n")  # Replace Windows-style line endings
 
         print(f"Processing file: {filepath}")
+        print(f"Diff:\n{diff}\n")  # Print the diff for debugging
 
         # Check if the file exists
         if not os.path.exists(filepath):
@@ -76,8 +79,20 @@ def apply_gemini_changes(gemini_response):
                 pass  # Create an empty file
 
         # Apply the diff
-        subprocess.run(["patch", "-p1", "--forward", "-i", "-"], input=diff.encode(), check=True)
-        print("Patch applied successfully.")
+        try:
+            # Try using git apply instead of patch
+            subprocess.run(['git', 'apply', '--index', '--whitespace=fix', '-'], input=diff.encode(), check=True)
+            print("Patch applied successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"Error applying patch to {filepath}: {e}")
+            print("Trying to apply patch using patch command...")
+            try:
+                subprocess.run(["patch", "-p1", "--forward", "-i", "-"], input=diff.encode(), check=True)
+                print("Patch applied successfully.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error applying patch to {filepath}: {e}")
+                print("Skipping file due to patch error.")
+                continue
 
         # Write the updated content to the file
         with open(filepath, "w") as f:

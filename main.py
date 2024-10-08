@@ -67,7 +67,7 @@ def main():
     # commit_and_push()
 
     # Update ticket status to "Code Review"
-    update_jira_status(ticket_number, "Code Review")
+    # update_jira_status(ticket_number, "Code Review")
 
 if __name__ == "__main__":
     main()
